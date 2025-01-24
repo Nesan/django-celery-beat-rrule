@@ -1,3 +1,4 @@
+import pytz
 from datetime import datetime, timedelta
 from functools import cached_property
 from logging import getLogger
@@ -7,7 +8,7 @@ from celery import Celery
 from celery.schedules import BaseSchedule, schedstate
 from celery.utils.time import remaining
 from dateutil.rrule import rruleset
-
+from django.conf import settings
 
 from .rrule_serializer import json_to_rruleset
 
@@ -38,12 +39,13 @@ class rruleschedule(BaseSchedule):
         next_date = self.next_date(last_run_at=last_run_at)
         if not next_date:
             return None
+        now = self.app_now().replace(tzinfo=None)
         logger.debug(
             f"Calculating remaining estimate for {self._rrule}"
             f"next_date is {next_date}"
         )
         return remaining(
-            last_run_at, next_date - last_run_at, datetime.now(tz=None), True
+            last_run_at, next_date - last_run_at, now, True
         )
 
     def is_due(self, last_run_at: datetime) -> schedstate:
@@ -76,9 +78,10 @@ class rruleschedule(BaseSchedule):
             the :pypi:`django-celery-beat` database scheduler the value
             is 5 seconds.
         """
-        last_run_at = last_run_at or datetime.now(tz=None) - timedelta(seconds=5)
+        last_run_at = last_run_at or self.app_now() - timedelta(seconds=5)
         last_run_at = last_run_at.replace(tzinfo=None)
         rem_delta = self.remaining_estimate(last_run_at)
+
         if rem_delta is None:
             # rrule reached its final date, reschedule far into the future
             max_date = datetime.max.replace(tzinfo=None)
@@ -101,3 +104,12 @@ class rruleschedule(BaseSchedule):
             next_remaining_s = max(next_rem_delta.total_seconds(), 0)
             return schedstate(is_due=True, next=next_remaining_s)
         return schedstate(is_due=False, next=remaining_s - 25)
+
+    def app_now(self):
+        """The app's perception of tz"""
+        # Useful when comparing now with app-stored datetimes like last_run_at
+        if getattr(settings, 'USE_TZ', False):
+            now = datetime.now(self.app.timezone)
+        else:
+            now = datetime.utcnow()
+        return now
